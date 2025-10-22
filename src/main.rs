@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-const DEFAULT_MAX_CONTEXT: u64 = 32_000;
+const DEFAULT_MAX_CONTEXT: u64 = 16_000;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -68,6 +68,7 @@ struct GenerateResponse {
     prompt_eval_duration: u64,
     response: String,
     total_duration: u64,
+    error: Option<String>,
 }
 
 #[tokio::main]
@@ -138,7 +139,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         path_as_string, extension, content
                     );
 
-                    if let Some(max_context) = max_context
+                    if let Some(max_context) = max_context.or(Some(DEFAULT_MAX_CONTEXT))
                         && (total_content_len + content.len() as u64) / 4 > max_context
                     {
                         break;
@@ -152,6 +153,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let document_count = documents.len();
             let context = documents
                 .into_iter()
+                .inspect(|(path, ..)| {
+                    if debug {
+                        println!("Adding file {path:?}");
+                    }
+                })
                 .map(|(.., content)| content)
                 .reduce(|acc, content| format!("{acc}\n{content}"))
                 .unwrap_or_default();
@@ -202,7 +208,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             if let Err(error) = response.error_for_status_ref() {
                 dbg!(error);
                 let error_response: serde_json::Value = response.json().await?;
-                dbg!(error_response);
+                eprintln!("ERROR: {}", error_response.get("error").unwrap_or_default());
             } else if is_stream {
                 let mut stream = response.bytes_stream();
                 println!("\n");
@@ -211,6 +217,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk.unwrap();
                     if let Ok(chunk) = serde_json::from_slice::<GenerateResponse>(&chunk) {
+                        if chunk.error.is_some() {
+                            eprintln!("ERROR: {}", chunk.error.unwrap_or_default());
+                            break;
+                        }
+
                         write!(stdout, "{}", &chunk.response)?;
                         stdout.flush()?;
 
