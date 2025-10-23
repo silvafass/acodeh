@@ -218,7 +218,7 @@ impl Iterator for IntoIter {
 }
 
 impl IntoIter {
-    pub fn filter_path<P>(self, predicate: P) -> FilterPath<Self, P> {
+    pub fn filter_path<P: FnMut(&PathBuf) -> bool>(self, predicate: P) -> FilterPath<Self, P> {
         FilterPath {
             inner: self,
             predicate,
