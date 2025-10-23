@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.48", features = ["derive"] }
 futures = "0.3.31"
+ignore = "0.4.24"
 pdf-extract = "0.10.0"
 reqwest = { version = "0.12.23", features = ["json", "stream"] }
 serde = "1.0.228"

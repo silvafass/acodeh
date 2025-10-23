@@ -1,5 +1,6 @@
 use acodeh::fs::FileSearcher;
 use futures::stream::StreamExt;
+use ignore::gitignore::GitignoreBuilder;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -94,6 +95,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let paths_iter = path
                 .iter()
                 .flat_map(|start_path| {
+                    let mut ignore_build = GitignoreBuilder::new(start_path);
+                    if let Err(error) = ignore_build.add_line(None, ".git")
+                        && debug
+                    {
+                        eprintln!("ERROR: {}", error);
+                    }
+
+                    let mut ignore = ignore_build.build().unwrap();
+
                     FileSearcher::new(start_path)
                         .overall(overall)
                         .max_depth(max_depth)
@@ -101,6 +111,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         .excludes(&excludes)
                         .extensions(extensions.as_ref())
                         .into_iter()
+                        .filter_path(move |path| {
+                            if path.ends_with(".gitignore") {
+                                if let Some(error) = ignore_build.add(path)
+                                    && debug
+                                {
+                                    eprintln!("ERROR: {}", error);
+                                }
+                                ignore = ignore_build.build().unwrap();
+                            }
+                            ignore.matched(path, path.is_dir()).is_none()
+                        })
                         .filter_map(|result| result.ok())
                 })
                 .filter(|path| path.is_file());
@@ -165,26 +186,33 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
             let context_len_estimated = total_content_len / 4;
             let prompt_context_len_estimated: u64 = prompt.len() as u64 / 4;
+
+            let max_context = match max_context {
+                Some(max_context) => max_context,
+                _ if prompt_context_len_estimated > DEFAULT_MAX_CONTEXT => DEFAULT_MAX_CONTEXT,
+                _ => {
+                    if (prompt_context_len_estimated / 1024).is_multiple_of(2) {
+                        ((prompt_context_len_estimated / 1024) + 2) * 1024
+                    } else {
+                        ((prompt_context_len_estimated / 1024) + 1) * 1024
+                    }
+                }
+            };
+
             println!(
                 concat!(
                     "Total of documents {},\n",
                     "Total of documents contents: {},\n",
                     "Documents context size: {}\n",
-                    "Prompt context size: {}",
+                    "Prompt context size: {}\n",
+                    "Max Context size: {}"
                 ),
                 document_count,
                 total_content_len,
                 context_len_estimated,
-                prompt_context_len_estimated
+                prompt_context_len_estimated,
+                max_context,
             );
-
-            let max_context = match max_context {
-                Some(max_context) => max_context,
-                _ if prompt_context_len_estimated < 4_000 => 4_000,
-                _ if prompt_context_len_estimated < 8_000 => 8_000,
-                _ if prompt_context_len_estimated < 16_000 => 16_000,
-                _ => DEFAULT_MAX_CONTEXT,
-            };
 
             let client = reqwest::Client::new();
 
