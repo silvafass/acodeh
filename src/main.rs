@@ -1,13 +1,13 @@
 use acodeh::fs::FileSearcher;
 use futures::stream::StreamExt;
-use ignore::gitignore::GitignoreBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
 
-const DEFAULT_MAX_CONTEXT: u64 = 16_000;
+const DEFAULT_MAX_CONTEXT: u64 = 16 * 1_024;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -99,10 +99,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     if let Err(error) = ignore_build.add_line(None, ".git")
                         && debug
                     {
-                        eprintln!("ERROR: {}", error);
+                        eprintln!("Could not add .git to ignore: {error:?}");
                     }
 
-                    let mut ignore = ignore_build.build().unwrap();
+                    let mut ignore = match ignore_build.build() {
+                        Ok(ignore) => ignore,
+                        Err(error) => {
+                            if debug {
+                                eprintln!("Failed to build ignore patterns: {error:?}");
+                                println!("Using a empty ignore pattern...");
+                            }
+                            Gitignore::empty()
+                        }
+                    };
 
                     FileSearcher::new(start_path)
                         .overall(overall)
@@ -118,7 +127,16 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 {
                                     eprintln!("ERROR: {}", error);
                                 }
-                                ignore = ignore_build.build().unwrap();
+                                ignore = match ignore_build.build() {
+                                    Ok(ignore) => ignore,
+                                    Err(error) => {
+                                        if debug {
+                                            eprintln!("Failed to build ignore patterns: {error:?}");
+                                            println!("Using a empty ignore pattern...");
+                                        }
+                                        Gitignore::empty()
+                                    }
+                                };
                             }
                             ignore.matched(path, path.is_dir()).is_none()
                         })
@@ -191,10 +209,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 Some(max_context) => max_context,
                 _ if prompt_context_len_estimated > DEFAULT_MAX_CONTEXT => DEFAULT_MAX_CONTEXT,
                 _ => {
-                    if (prompt_context_len_estimated / 1024).is_multiple_of(2) {
-                        ((prompt_context_len_estimated / 1024) + 2) * 1024
+                    let mut aligned_context_len = 2 * 1024;
+                    while aligned_context_len < prompt_context_len_estimated {
+                        aligned_context_len *= 2;
+                    }
+
+                    if aligned_context_len > DEFAULT_MAX_CONTEXT {
+                        DEFAULT_MAX_CONTEXT
                     } else {
-                        ((prompt_context_len_estimated / 1024) + 1) * 1024
+                        aligned_context_len
                     }
                 }
             };
