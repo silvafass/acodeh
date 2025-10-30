@@ -1,11 +1,9 @@
-use acodeh::{fs::FileSearcher, llm};
+use acodeh::{fs::FileSearcher, llm, prompt::PromptBuilder};
 use clap::Parser;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
-
-const DEFAULT_MAX_CONTEXT: u64 = 16 * 1_024;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -107,90 +105,33 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 })
                 .filter(|path| path.is_file());
 
-            let mut total_content_len = 0;
-            let mut documents = vec![];
+            let mut prompt_builder = PromptBuilder::new(prompt).max_context(max_context);
             for path in paths_iter {
-                let extension = path
-                    .extension()
-                    .map(|extension| extension.to_string_lossy().to_string())
-                    .unwrap_or_default();
                 let path_as_string = path.to_string_lossy().to_string();
-
-                let content = if path.extension().unwrap_or_default().to_string_lossy() == "pdf" {
-                    pdf_extract::extract_text(&path)
-                        .inspect_err(|error| {
-                            if debug {
-                                eprintln!("{error:?}\nwhile reading {path_as_string}");
-                            }
-                        })
-                        .ok()
-                } else {
-                    tokio::fs::read_to_string(&path)
-                        .await
-                        .inspect_err(|error| {
-                            if debug {
-                                eprintln!("{error:?}\nwhile reading {path_as_string}");
-                            }
-                        })
-                        .ok()
-                };
-
-                if let Some(content) = content {
-                    let content = format!(
-                        "path: {}\n```{}\n{}\n```",
-                        path_as_string, extension, content
-                    );
-
-                    if let Some(max_context) = max_context.or(Some(DEFAULT_MAX_CONTEXT))
-                        && (total_content_len + content.len() as u64) / 4 > max_context
-                    {
-                        break;
-                    }
-                    total_content_len += content.len() as u64;
-
-                    documents.push((path, content));
+                let result = prompt_builder
+                    .add_from_path(path)
+                    .await
+                    .inspect(|_| {
+                        if debug {
+                            println!("Adding file {path_as_string:?}");
+                        }
+                    })
+                    .inspect_err(|err| {
+                        if debug {
+                            eprintln!("{err:?}\nwhile reading {path_as_string}");
+                        }
+                    });
+                if let Err(err) = result
+                    && err.to_string().contains("Maximum context exceeded")
+                {
+                    break;
                 }
             }
 
-            let document_count = documents.len();
-            let context = documents
-                .into_iter()
-                .inspect(|(path, ..)| {
-                    if debug {
-                        println!("Adding file {path:?}");
-                    }
-                })
-                .map(|(.., content)| content)
-                .reduce(|acc, content| format!("{acc}\n{content}"))
-                .unwrap_or_default();
-            let prompt = format!(include_str!("prompt_templete.in"), prompt, context);
-
-            let context_len_estimated = total_content_len / 4;
-            let prompt_context_len_estimated: u64 = prompt.len() as u64 / 4;
-
-            let max_context = match max_context {
-                Some(max_context) => max_context,
-                _ if prompt_context_len_estimated > DEFAULT_MAX_CONTEXT => DEFAULT_MAX_CONTEXT,
-                _ => {
-                    let mut aligned_context_len = 2 * 1024;
-                    while aligned_context_len < prompt_context_len_estimated {
-                        aligned_context_len *= 2;
-                    }
-
-                    if aligned_context_len > DEFAULT_MAX_CONTEXT {
-                        DEFAULT_MAX_CONTEXT
-                    } else {
-                        aligned_context_len
-                    }
-                }
-            };
+            let (prompt, prompt_stats) = prompt_builder.build()?;
 
             println!("\n{:#^80}", " Payload stats ");
-            println!("Total of documents {document_count}");
-            println!("Total of documents contents: {total_content_len}");
-            println!("Documents context size: {context_len_estimated}");
-            println!("Prompt context size: {prompt_context_len_estimated}");
-            println!("Max Context size: {max_context}");
+            println!("\n{:#?}", prompt_stats);
             println!("{:#^80}\n", "");
 
             let llm = llm::LLMClient::default();
@@ -203,7 +144,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 prompt: Some(prompt),
                 stream: Some(is_stream),
                 options: Some(llm::ModelParameters {
-                    num_ctx: Some(max_context),
+                    num_ctx: Some(prompt_stats.max_context),
                 }),
             };
 
