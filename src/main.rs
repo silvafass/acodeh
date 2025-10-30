@@ -1,11 +1,9 @@
-use acodeh::fs::FileSearcher;
-use futures::stream::StreamExt;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
-use std::path::PathBuf;
-
+use acodeh::{fs::FileSearcher, llm};
 use clap::Parser;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::Duration;
 
 const DEFAULT_MAX_CONTEXT: u64 = 16 * 1_024;
 
@@ -35,41 +33,6 @@ enum Command {
         #[arg(long, default_value_t = false)]
         debug: bool,
     },
-}
-
-#[derive(Debug, Default, Serialize)]
-struct ModelParameters {
-    num_ctx: Option<u64>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct GeneratePayload {
-    model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<ModelParameters>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct GenerateResponse {
-    created_at: String,
-    done_reason: String,
-    done: bool,
-    eval_count: u64,
-    eval_duration: u64,
-    load_duration: u64,
-    model: String,
-    prompt_eval_count: u64,
-    prompt_eval_duration: u64,
-    response: String,
-    total_duration: u64,
-    error: Option<String>,
 }
 
 #[tokio::main]
@@ -222,78 +185,69 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            println!(
-                concat!(
-                    "Total of documents {},\n",
-                    "Total of documents contents: {},\n",
-                    "Documents context size: {}\n",
-                    "Prompt context size: {}\n",
-                    "Max Context size: {}"
-                ),
-                document_count,
-                total_content_len,
-                context_len_estimated,
-                prompt_context_len_estimated,
-                max_context,
-            );
+            println!("\n{:#^80}", " Payload stats ");
+            println!("Total of documents {document_count}");
+            println!("Total of documents contents: {total_content_len}");
+            println!("Documents context size: {context_len_estimated}");
+            println!("Prompt context size: {prompt_context_len_estimated}");
+            println!("Max Context size: {max_context}");
+            println!("{:#^80}\n", "");
 
-            let client = reqwest::Client::new();
+            let llm = llm::LLMClient::default();
 
             let is_stream = true;
-            let payload = GeneratePayload {
+
+            let payload = llm::GeneratePayload {
                 model: model.unwrap_or("llama3.2:latest".to_string()),
                 system: Some(include_str!("system.in").to_string()),
                 prompt: Some(prompt),
                 stream: Some(is_stream),
-                options: Some(ModelParameters {
+                options: Some(llm::ModelParameters {
                     num_ctx: Some(max_context),
                 }),
             };
 
-            let response = client
-                .post("http://localhost:11434/api/generate")
-                .json(&payload)
-                .send()
-                .await?;
+            if is_stream {
+                llm.generate_stream(&payload, |chunk| async move {
+                    print!("{}", chunk.response);
+                    std::io::stdout().flush().unwrap();
+                    if chunk.done {
+                        println!("\n\n{:#^80}", " Reponse stats ");
+                        println!("model: {}", chunk.model);
+                        println!("eval_count: {}", chunk.eval_count);
+                        println!("prompt_eval_count: {}", chunk.prompt_eval_count);
+                        println!("error: {:?}", chunk.error);
+                        println!(
+                            "total_duration: {:?}",
+                            Duration::from_nanos(chunk.total_duration)
+                        );
+                        println!("{:#^80}\n", "");
 
-            if let Err(error) = response.error_for_status_ref() {
-                dbg!(error);
-                let error_response: serde_json::Value = response.json().await?;
-                eprintln!("ERROR: {}", error_response.get("error").unwrap_or_default());
-            } else if is_stream {
-                let mut stream = response.bytes_stream();
-                println!("\n");
-                let mut stdout = io::stdout();
-                let mut no_parsed_chunks: Vec<u8> = vec![];
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.unwrap();
-                    if let Ok(chunk) = serde_json::from_slice::<GenerateResponse>(&chunk) {
-                        if chunk.error.is_some() {
-                            eprintln!("ERROR: {}", chunk.error.unwrap_or_default());
-                            break;
+                        if debug {
+                            println!("\n{:#?}", chunk);
                         }
-
-                        write!(stdout, "{}", &chunk.response)?;
-                        stdout.flush()?;
-
-                        if chunk.done {
-                            println!("\n");
-                            dbg!(chunk);
-                        }
-                    } else {
-                        no_parsed_chunks = [no_parsed_chunks, chunk.to_vec()].concat();
                     }
-                }
-                if !no_parsed_chunks.is_empty() {
-                    let chunk = serde_json::from_slice::<GenerateResponse>(&no_parsed_chunks)?;
-                    println!("\n");
-                    dbg!(chunk);
-                }
+                    chunk.done
+                })
+                .await?;
             } else {
-                let generated: GenerateResponse = response.json().await?;
+                let generated = llm.generate_once(&payload).await?;
                 println!("{}", generated.response);
-                println!("\n");
-                dbg!(generated);
+
+                println!("\n\n{:#^80}", " Reponse stats ");
+                println!("model: {}", generated.model);
+                println!("eval_count: {}", generated.eval_count);
+                println!("prompt_eval_count: {}", generated.prompt_eval_count);
+                println!("error: {:?}", generated.error);
+                println!(
+                    "total_duration: {:?}",
+                    Duration::from_nanos(generated.total_duration)
+                );
+                println!("{:#^80}\n", "");
+
+                if debug {
+                    println!("\n{:#?}", generated);
+                }
             }
         }
     }
