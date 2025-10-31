@@ -34,7 +34,7 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let command = Command::parse();
 
     match command {
@@ -111,14 +111,14 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let result = prompt_builder
                     .add_from_path(path)
                     .await
-                    .inspect(|_| {
+                    .inspect(|content_len| {
                         if debug {
-                            println!("Adding file {path_as_string:?}");
+                            println!("Adding file {path_as_string:?} ({}b)", content_len);
                         }
                     })
                     .inspect_err(|err| {
                         if debug {
-                            eprintln!("{err:?}\nwhile reading {path_as_string}");
+                            eprintln!("{err:?}");
                         }
                     });
                 if let Err(err) = result

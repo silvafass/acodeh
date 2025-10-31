@@ -37,7 +37,7 @@ impl PromptBuilder {
         self
     }
 
-    pub async fn add_from_path(&mut self, path: PathBuf) -> anyhow::Result<()> {
+    pub async fn add_from_path(&mut self, path: PathBuf) -> anyhow::Result<u64> {
         let extension = path
             .extension()
             .map(|extension| extension.to_string_lossy().to_string())
@@ -55,29 +55,35 @@ impl PromptBuilder {
             path_as_string, extension, content
         );
 
+        let content_len = content.len() as u64;
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.total_content_len + content.len() as u64) / 4 > max_context
+            && (self.total_content_len + content_len) / 4 > max_context
         {
-            return Err(anyhow!("Maximum context exceeded: {max_context:?}"));
+            return Err(anyhow!(
+                "Maximum context exceeded ({max_context:?}) while adding {path_as_string} ({content_len}b)"
+            ));
         }
-        self.total_content_len += content.len() as u64;
+        self.total_content_len += content_len;
 
         self.files.push(content);
 
-        Ok(())
+        Ok(content_len)
     }
 
-    pub fn add_document(&mut self, content: String) -> anyhow::Result<()> {
+    pub fn add_document(&mut self, content: String) -> anyhow::Result<u64> {
+        let content_len = content.len() as u64;
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.total_content_len + content.len() as u64) / 4 > max_context
+            && (self.total_content_len + content_len) / 4 > max_context
         {
-            return Err(anyhow!("Maximum context exceeded: {max_context:?}"));
+            return Err(anyhow!(
+                "Maximum context exceeded {max_context:?} while adding document ({content_len}b)"
+            ));
         }
-        self.total_content_len += content.len() as u64;
+        self.total_content_len += content_len;
 
         self.documents.push(content);
 
-        Ok(())
+        Ok(content_len)
     }
 
     pub fn build(self) -> anyhow::Result<(String, PromptStats)> {
