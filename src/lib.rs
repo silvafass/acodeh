@@ -1,3 +1,3 @@
 pub mod fs;
-pub mod llm;
+pub mod ollama;
 pub mod prompt;

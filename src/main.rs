@@ -1,5 +1,8 @@
-use acodeh::{fs::FileSearcher, llm, prompt::PromptBuilder};
+use acodeh::ollama::GenerateRequest;
+use acodeh::{fs::FileSearcher, ollama, prompt::PromptBuilder};
+use anyhow::anyhow;
 use clap::Parser;
+use futures::StreamExt;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::io::Write;
 use std::path::PathBuf;
@@ -134,60 +137,37 @@ async fn main() -> anyhow::Result<()> {
             println!("\n{:#?}", prompt_stats);
             println!("{:#^80}\n", "");
 
-            let llm = llm::LLMClient::default();
+            let client = ollama::LLMClient::default();
 
-            let is_stream = true;
+            let mut stream =
+                GenerateRequest::new(&model.unwrap_or("llama3.2:latest".to_string()), &client)
+                    .system(include_str!("system.in"))
+                    .num_ctx_options(prompt_stats.max_context)
+                    .prompt_stream(&prompt)
+                    .await?;
 
-            let payload = llm::GeneratePayload {
-                model: model.unwrap_or("llama3.2:latest".to_string()),
-                system: Some(include_str!("system.in").to_string()),
-                prompt: Some(prompt),
-                stream: Some(is_stream),
-                options: Some(llm::ModelParameters {
-                    num_ctx: Some(prompt_stats.max_context),
-                }),
-            };
+            while let Some(response) = stream.next().await {
+                if let Some(err) = response.error {
+                    return Err(anyhow!("LLM error: {err}"));
+                }
 
-            if is_stream {
-                llm.generate_stream(&payload, |chunk| async move {
-                    print!("{}", chunk.response);
-                    std::io::stdout().flush().unwrap();
-                    if chunk.done {
-                        println!("\n\n{:#^80}", " Reponse stats ");
-                        println!("model: {}", chunk.model);
-                        println!("eval_count: {}", chunk.eval_count);
-                        println!("prompt_eval_count: {}", chunk.prompt_eval_count);
-                        println!("error: {:?}", chunk.error);
-                        println!(
-                            "total_duration: {:?}",
-                            Duration::from_nanos(chunk.total_duration)
-                        );
-                        println!("{:#^80}\n", "");
+                print!("{}", response.response);
+                std::io::stdout().flush().unwrap();
+                if response.done {
+                    println!("\n\n{:#^80}", " Reponse stats ");
+                    println!("model: {}", response.model);
+                    println!("eval_count: {}", response.eval_count);
+                    println!("prompt_eval_count: {}", response.prompt_eval_count);
+                    println!("error: {:?}", response.error);
+                    println!(
+                        "total_duration: {:?}",
+                        Duration::from_nanos(response.total_duration)
+                    );
+                    println!("{:#^80}\n", "");
 
-                        if debug {
-                            println!("\n{:#?}", chunk);
-                        }
+                    if debug {
+                        println!("\n{:#?}", response);
                     }
-                    chunk.done
-                })
-                .await?;
-            } else {
-                let generated = llm.generate_once(&payload).await?;
-                println!("{}", generated.response);
-
-                println!("\n\n{:#^80}", " Reponse stats ");
-                println!("model: {}", generated.model);
-                println!("eval_count: {}", generated.eval_count);
-                println!("prompt_eval_count: {}", generated.prompt_eval_count);
-                println!("error: {:?}", generated.error);
-                println!(
-                    "total_duration: {:?}",
-                    Duration::from_nanos(generated.total_duration)
-                );
-                println!("{:#^80}\n", "");
-
-                if debug {
-                    println!("\n{:#?}", generated);
                 }
             }
         }
