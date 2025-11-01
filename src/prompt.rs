@@ -1,4 +1,4 @@
-use anyhow::{Ok, anyhow};
+use anyhow::anyhow;
 use std::path::PathBuf;
 
 const DEFAULT_MAX_CONTEXT: u64 = 16 * 1_024;
@@ -60,7 +60,7 @@ impl PromptBuilder {
 
         let content_context_size = estimate_context_size(&content);
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.context_size_estimated + content_context_size) / 4 > max_context
+            && (self.context_size_estimated + content_context_size) > max_context
         {
             return Err(anyhow!(
                 "Maximum context exceeded ({max_context:?}) while adding {path_as_string} ({content_context_size})",
@@ -76,7 +76,7 @@ impl PromptBuilder {
     pub fn add_document(&mut self, content: String) -> anyhow::Result<u64> {
         let content_context_size = estimate_context_size(&content);
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.context_size_estimated + content_context_size) / 4 > max_context
+            && (self.context_size_estimated + content_context_size) > max_context
         {
             return Err(anyhow!(
                 "Maximum context exceeded {max_context:?} while adding document ({content_context_size})"
@@ -121,17 +121,17 @@ impl PromptBuilder {
         let prompt_context_size_estimated;
         if context.is_empty() {
             prompt = self.prompt.clone();
-            prompt_context_size_estimated = prompt.len() as u64 / 4;
+            prompt_context_size_estimated = estimate_context_size(&prompt);
         } else {
             prompt = [
                 self.prompt.clone(),
                 format!(
-                    include_str!("prompt_context_templete.in"),
+                    include_str!("prompt_context_template.in"),
                     context.join("\n")
                 ),
             ]
             .join("\n");
-            prompt_context_size_estimated = prompt.len() as u64 / 4;
+            prompt_context_size_estimated = estimate_context_size(&prompt);
         }
 
         let max_context = match self.max_context {
