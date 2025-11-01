@@ -3,13 +3,16 @@ use std::path::PathBuf;
 
 const DEFAULT_MAX_CONTEXT: u64 = 16 * 1_024;
 
+fn estimate_context_size(content: &str) -> u64 {
+    content.len() as u64 / 4
+}
+
 #[derive(Debug)]
 pub struct PromptStats {
     pub file_count: usize,
     pub document_count: usize,
-    pub total_content_len: u64,
-    pub context_len_estimated: u64,
-    pub prompt_context_len_estimated: u64,
+    pub context_size_estimated: u64,
+    pub prompt_context_size_estimated: u64,
     pub max_context: u64,
 }
 
@@ -17,7 +20,7 @@ pub struct PromptBuilder {
     prompt: String,
     files: Vec<(PathBuf, String)>,
     documents: Vec<String>,
-    total_content_len: u64,
+    context_size_estimated: u64,
     max_context: Option<u64>,
 }
 
@@ -27,7 +30,7 @@ impl PromptBuilder {
             prompt,
             files: vec![],
             documents: vec![],
-            total_content_len: 0,
+            context_size_estimated: 0,
             max_context: None,
         }
     }
@@ -55,35 +58,35 @@ impl PromptBuilder {
             path_as_string, extension, content
         );
 
-        let content_len = content.len() as u64;
+        let content_context_size = estimate_context_size(&content);
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.total_content_len + content_len) / 4 > max_context
+            && (self.context_size_estimated + content_context_size) / 4 > max_context
         {
             return Err(anyhow!(
-                "Maximum context exceeded ({max_context:?}) while adding {path_as_string} ({content_len}b)"
+                "Maximum context exceeded ({max_context:?}) while adding {path_as_string} ({content_context_size})",
             ));
         }
-        self.total_content_len += content_len;
+        self.context_size_estimated += content_context_size;
 
         self.files.push((path, content));
 
-        Ok(content_len)
+        Ok(content_context_size)
     }
 
     pub fn add_document(&mut self, content: String) -> anyhow::Result<u64> {
-        let content_len = content.len() as u64;
+        let content_context_size = estimate_context_size(&content);
         if let Some(max_context) = self.max_context.or(Some(DEFAULT_MAX_CONTEXT))
-            && (self.total_content_len + content_len) / 4 > max_context
+            && (self.context_size_estimated + content_context_size) / 4 > max_context
         {
             return Err(anyhow!(
-                "Maximum context exceeded {max_context:?} while adding document ({content_len}b)"
+                "Maximum context exceeded {max_context:?} while adding document ({content_context_size})"
             ));
         }
-        self.total_content_len += content_len;
+        self.context_size_estimated += content_context_size;
 
         self.documents.push(content);
 
-        Ok(content_len)
+        Ok(content_context_size)
     }
 
     pub fn files(&self) -> &Vec<(PathBuf, String)> {
@@ -115,10 +118,10 @@ impl PromptBuilder {
         }
 
         let prompt;
-        let prompt_context_len_estimated;
+        let prompt_context_size_estimated;
         if context.is_empty() {
             prompt = self.prompt.clone();
-            prompt_context_len_estimated = prompt.len() as u64 / 4;
+            prompt_context_size_estimated = prompt.len() as u64 / 4;
         } else {
             prompt = [
                 self.prompt.clone(),
@@ -128,15 +131,15 @@ impl PromptBuilder {
                 ),
             ]
             .join("\n");
-            prompt_context_len_estimated = prompt.len() as u64 / 4;
+            prompt_context_size_estimated = prompt.len() as u64 / 4;
         }
 
         let max_context = match self.max_context {
             Some(max_context) => max_context,
-            _ if prompt_context_len_estimated > DEFAULT_MAX_CONTEXT => DEFAULT_MAX_CONTEXT,
+            _ if prompt_context_size_estimated > DEFAULT_MAX_CONTEXT => DEFAULT_MAX_CONTEXT,
             _ => {
                 let mut aligned_context_len = 2 * 1024;
-                while aligned_context_len < prompt_context_len_estimated {
+                while aligned_context_len < prompt_context_size_estimated {
                     aligned_context_len *= 2;
                 }
 
@@ -153,9 +156,8 @@ impl PromptBuilder {
             PromptStats {
                 file_count: self.files.len(),
                 document_count: self.documents.len(),
-                total_content_len: self.total_content_len,
-                context_len_estimated: self.total_content_len / 4,
-                prompt_context_len_estimated,
+                context_size_estimated: self.context_size_estimated,
+                prompt_context_size_estimated,
                 max_context,
             },
         ))
