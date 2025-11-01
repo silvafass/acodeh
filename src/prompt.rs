@@ -15,7 +15,7 @@ pub struct PromptStats {
 
 pub struct PromptBuilder {
     prompt: String,
-    files: Vec<String>,
+    files: Vec<(PathBuf, String)>,
     documents: Vec<String>,
     total_content_len: u64,
     max_context: Option<u64>,
@@ -37,7 +37,7 @@ impl PromptBuilder {
         self
     }
 
-    pub async fn add_from_path(&mut self, path: PathBuf) -> anyhow::Result<u64> {
+    pub async fn add_file(&mut self, path: PathBuf) -> anyhow::Result<u64> {
         let extension = path
             .extension()
             .map(|extension| extension.to_string_lossy().to_string())
@@ -65,7 +65,7 @@ impl PromptBuilder {
         }
         self.total_content_len += content_len;
 
-        self.files.push(content);
+        self.files.push((path, content));
 
         Ok(content_len)
     }
@@ -86,11 +86,26 @@ impl PromptBuilder {
         Ok(content_len)
     }
 
-    pub fn build(self) -> anyhow::Result<(String, PromptStats)> {
+    pub fn files(&self) -> &Vec<(PathBuf, String)> {
+        &self.files
+    }
+
+    pub fn documents(&self) -> &Vec<String> {
+        &self.documents
+    }
+
+    pub fn build(&self) -> anyhow::Result<(String, PromptStats)> {
         let mut context: Vec<String> = vec![];
 
         if !self.files.is_empty() {
-            context.push(format!("<files>\n{}\n</files>", self.files.join("\n")));
+            context.push(format!(
+                "<files>\n{}\n</files>",
+                self.files
+                    .iter()
+                    .fold(String::new(), |acc, (.., content)| format!(
+                        "{acc}\n{content}"
+                    ))
+            ));
         }
         if !self.documents.is_empty() {
             context.push(format!(
@@ -102,11 +117,11 @@ impl PromptBuilder {
         let prompt;
         let prompt_context_len_estimated;
         if context.is_empty() {
-            prompt = self.prompt;
+            prompt = self.prompt.clone();
             prompt_context_len_estimated = prompt.len() as u64 / 4;
         } else {
             prompt = [
-                self.prompt,
+                self.prompt.clone(),
                 format!(
                     include_str!("prompt_context_templete.in"),
                     context.join("\n")

@@ -33,6 +33,8 @@ enum Command {
         max_context: Option<u64>,
         #[arg(long, default_value_t = false)]
         debug: bool,
+        #[arg(long, default_value_t = false)]
+        show_stats: bool,
     },
 }
 
@@ -53,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
             max_depth,
             max_context,
             debug,
+            show_stats,
         } => {
             let max_depth = if recursive { usize::MAX } else { max_depth };
 
@@ -110,32 +113,31 @@ async fn main() -> anyhow::Result<()> {
 
             let mut prompt_builder = PromptBuilder::new(prompt).max_context(max_context);
             for path in paths_iter {
-                let path_as_string = path.to_string_lossy().to_string();
-                let result = prompt_builder
-                    .add_from_path(path)
-                    .await
-                    .inspect(|content_len| {
-                        if debug {
-                            println!("Adding file {path_as_string:?} ({}b)", content_len);
-                        }
-                    })
-                    .inspect_err(|err| {
-                        if debug {
-                            eprintln!("{err:?}");
-                        }
-                    });
-                if let Err(err) = result
-                    && err.to_string().contains("Maximum context exceeded")
-                {
-                    break;
+                if let Err(err) = prompt_builder.add_file(path).await {
+                    if debug {
+                        eprintln!("{err:?}");
+                    }
+                    if err.to_string().contains("Maximum context exceeded") {
+                        break;
+                    }
                 }
             }
 
             let (prompt, prompt_stats) = prompt_builder.build()?;
 
-            println!("\n{:#^80}", " Payload stats ");
-            println!("\n{:#?}", prompt_stats);
-            println!("{:#^80}\n", "");
+            if debug {
+                println!("{:#^80}", " Debugging context added ");
+                for (path, content) in prompt_builder.files() {
+                    println!("File {path:?} ({}b) added", content.len());
+                }
+                println!("{:#^80}\n", "");
+            }
+
+            if show_stats {
+                println!("{:#^80}", " Payload stats ");
+                println!("{:#?}", prompt_stats);
+                println!("{:#^80}\n", "");
+            }
 
             let client = ollama::LLMClient::default();
 
@@ -154,19 +156,25 @@ async fn main() -> anyhow::Result<()> {
                 print!("{}", response.response);
                 std::io::stdout().flush().unwrap();
                 if response.done {
-                    println!("\n\n{:#^80}", " Reponse stats ");
-                    println!("model: {}", response.model);
-                    println!("eval_count: {}", response.eval_count);
-                    println!("prompt_eval_count: {}", response.prompt_eval_count);
-                    println!("error: {:?}", response.error);
-                    println!(
-                        "total_duration: {:?}",
-                        Duration::from_nanos(response.total_duration)
-                    );
-                    println!("{:#^80}\n", "");
+                    println!();
+
+                    if show_stats {
+                        println!("\n{:#^80}", " Reponse stats ");
+                        println!("model: {}", response.model);
+                        println!("eval_count: {}", response.eval_count);
+                        println!("prompt_eval_count: {}", response.prompt_eval_count);
+                        println!("error: {:?}", response.error);
+                        println!(
+                            "total_duration: {:?}",
+                            Duration::from_nanos(response.total_duration)
+                        );
+                        println!("{:#^80}", "");
+                    }
 
                     if debug {
-                        println!("\n{:#?}", response);
+                        println!("\n{:#^80}", " Debugging response ");
+                        println!("{:#?}", response);
+                        println!("{:#^80}", "");
                     }
                 }
             }
