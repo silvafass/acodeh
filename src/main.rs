@@ -57,6 +57,12 @@ async fn main() -> anyhow::Result<()> {
             debug,
             show_stats,
         } => {
+            if debug {
+                println!("{:#^80}", " Prompt ");
+                println!("{prompt}");
+                println!("{:#^80}\n", "");
+            }
+
             let max_depth = if recursive { usize::MAX } else { max_depth };
 
             let paths_iter = path
