@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use futures::stream::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::{Serialize, Deserialize}
 
 const DEFAULT_API_URL: &str = "http://localhost:11434/api/generate";
 
